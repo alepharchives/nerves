@@ -1,0 +1,12 @@
+{application, nerves,
+ [
+  {description, ""},
+  {vsn, git},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { nerves_app, []}},
+  {env, []}
+ ]}.
