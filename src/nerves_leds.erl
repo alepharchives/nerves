@@ -20,7 +20,11 @@
 	 }).
 
 %% API
--export([open/1, set_brightness/2, close/1]).
+-export([open/1, 
+	 close/1,
+	 set_brightness/2,
+	 max_brightness/1
+	]).
 
 %%%===================================================================
 %%% API
@@ -44,9 +48,17 @@ set_brightness(Led, BrightnessLevel) ->
 		0, 
 		integer_to_list(BrightnessLevel)).
 
+max_brightness(Led) ->
+    read_sysfs_integer(Led#led_info.dir_name ++ "/max_brightness").
+    
 close(Led) ->
     file:close(Led#led_info.brightness_file_handle).
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+read_sysfs_integer(Filename) ->
+    {ok, Handle} = file:open(Filename, [read]),
+    {ok, ValueAsString} = file:pread(Handle, 0, 32),
+    {Value, _} = string:to_integer(ValueAsString),
+    Value.
