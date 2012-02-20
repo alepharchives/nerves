@@ -6,44 +6,60 @@
 %%% @end
 %%% Created : 20 Feb 2012 by Frank Hunleth <fhunleth@troodon-software.com>
 %%%-------------------------------------------------------------------
--module('nerves_leds').
+-module('nerves_led').
 
 -behaviour(gen_server).
 
 %% API
--export([start_link/0, 
-	 enumerate/0, 
-	 open/1]).
+-export([start_link/1,
+	 set_brightness/2,
+	 brightness/1,
+	 max_brightness/1,
+	 disable_triggers/1,
+	 blink/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE). 
+
 -define(LED_SYSFS_DIR, "/sys/class/leds/").
 
 -record(state, {
-	  %% LedName -> Led process map
-	  leds
+	  %% LED class directory path
+	  dir_name,
+	  
+	  %% Handles
+	  brightness_file_handle
 	 }).
+
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc Return a list of the LEDs that are controllable through
-%%      the Linux LED class driver
-%% @spec enumerate() -> {ok, List}
-%%--------------------------------------------------------------------
-enumerate() ->
-    gen_server:call(?SERVER, {enumerate}).
+%% @doc Change the brightness of the LED. For many LEDs this just 
+%%      controls whether they are on (1) or off (0)
+set_brightness(Led, BrightnessLevel) ->
+    gen_server:call(Led, {set_brightness, BrightnessLevel}).
 
-%%--------------------------------------------------------------------
-%% @doc Open the specified LED for use
-%%--------------------------------------------------------------------
-open(LedName) ->
-    gen_server:call(?SERVER, {open, LedName}).
+%% @doc Return the current LED brightness
+brightness(Led) ->
+    gen_server:call(Led, {brightness}).
+
+%% @doc Get the maximum brightness that may be passed to 
+%%      set_brightness/2.
+max_brightness(Led) ->
+    gen_server:call(Led, {max_brightness}).
+
+%% @doc Disable all triggers on the LED    
+disable_triggers(Led) ->
+    gen_server:call(Led, {disable_triggers}).
+
+%% @doc Configure a trigger to blink the LED
+blink(Led, OnTimeMillis, OffTimeMillis) ->
+    gen_server:call(Led, {blink, OnTimeMillis, OffTimeMillis}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -52,8 +68,8 @@ open(LedName) ->
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(LedName) ->
+    gen_server:start_link(?MODULE, [LedName], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -70,8 +86,13 @@ start_link() ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([]) ->
-    {ok, #state{leds=dict:new()}}.
+init([LedName]) ->
+    LedDirName = ?LED_SYSFS_DIR ++ LedName ++ "/",
+    BrightnessFile = LedDirName ++ "brightness",
+    {ok, BrightnessFileHandle} = file:open(BrightnessFile, [read, write]),
+    State = #state{dir_name = LedDirName, 
+		   brightness_file_handle = BrightnessFileHandle},
+    {ok, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -87,21 +108,34 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({enumerate}, _From, State) ->
-    {ok, LedNames} = file:list_dir(?LED_SYSFS_DIR),
-    Reply = {ok, LedNames},
+handle_call({set_brightness, BrightnessLevel}, _From, State) ->
+    file:pwrite(State#state.brightness_file_handle, 
+		0, 
+		integer_to_list(BrightnessLevel)),
+    Reply = ok,
     {reply, Reply, State};
-handle_call({open,LedName}, _From, State) ->
-    {LedProcess,Leds} = case dict:find(LedName, State#state.leds) of
-			    error ->
-				{ok, P} = nerves_led:start_link(LedName),
-				{P, dict:store(LedName, P, State#state.leds)};
-			    {ok, P} ->
-				{P, State#state.leds}
-			end,
-    Reply = {ok, LedProcess},
-    NewState = #state{leds=Leds},
-    {reply, Reply, NewState}.
+
+handle_call({brightness}, _From, State) ->
+    {ok, ValueAsString} = file:pread(State#state.brightness_file_handle, 
+				     0, 32),
+    {Value, _} = string:to_integer(ValueAsString),
+    Reply = {ok, Value},
+    {reply, Reply, State};
+    
+handle_call({max_brightness}, _From, State) ->
+    Value = read_sysfs_integer(State#state.dir_name ++ "max_brightness"),
+    Reply = {ok, Value},
+    {reply, Reply, State};
+
+handle_call({disable_triggers}, _From, State) ->
+    write_sysfs_string(State#state.dir_name ++ "trigger", "none"),
+    {reply, ok, State};
+
+handle_call({blink, OnTimeMillis, OffTimeMillis}, _From, State) ->
+    write_sysfs_string(State#state.dir_name ++ "trigger", "timer"),
+    write_sysfs_string(State#state.dir_name ++ "delay_on", integer_to_list(OnTimeMillis)),
+    write_sysfs_string(State#state.dir_name ++ "delay_off", integer_to_list(OffTimeMillis)),
+    {reply, ok, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -157,3 +191,14 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+read_sysfs_integer(Filename) ->
+    {ok, Handle} = file:open(Filename, [read]),
+    {ok, ValueAsString} = file:pread(Handle, 0, 32),
+    file:close(Handle),
+    {Value, _} = string:to_integer(ValueAsString),
+    Value.
+
+write_sysfs_string(Filename, Value) ->
+    {ok, Handle} = file:open(Filename, [write]),
+    file:pwrite(Handle, 0, Value),
+    file:close(Handle).
